@@ -21,10 +21,27 @@ print("3. Fixed TP + Spread Compensation + SL Compensation")
 print("4. Fixed TP + SL Compensation")
 tp_type = int(input("Enter TP type (1-4): "))
 
+# تنظیمات پیش‌فرض برای اسپرد
+SPREAD_DEFAULT = 0.0008  # 0.08% اسپرد پیش‌فرض
+
+spread_comp = SPREAD_DEFAULT
+sl_comp = 0.0
+
 if tp_type in [2, 3]:
-    spread_comp = float(input("Enter spread compensation percentage: ")) / 100
+    spread_input = input(f"Enter spread compensation percentage (default={SPREAD_DEFAULT*100:.2f}%): ")
+    spread_comp = float(spread_input)/100 if spread_input else SPREAD_DEFAULT
+
 if tp_type in [3, 4]:
-    sl_comp = float(input("Enter SL compensation percentage: ")) / 100
+    sl_input = input("Enter SL compensation percentage: ")
+    sl_comp = float(sl_input)/100 if sl_input else 0.0
+
+# ===== تنظیمات ریسک‌فری =====
+risk_free_enabled = input("Enable risk-free mode? (y/n): ").lower().strip() == 'y'
+risk_free_pct = 0.0
+
+if risk_free_enabled:
+    risk_free_input = input("Enter risk-free percentage (e.g. 0.3 for 0.3%): ")
+    risk_free_pct = float(risk_free_input)/100 if risk_free_input else 0.003
 
 # ===== پارامترهای ثابت استراتژی =====
 RSI_LENGTH = 14
@@ -101,7 +118,10 @@ for timestamp, row in df.iterrows():
         highs.append(row["high"])
         lows.append(row["low"])
         
-        if rsi_val > RSI_OVERSOLD or (timestamp - start_time).total_seconds()/3600 > BOX_LENGTH_BARS:
+        # استفاده از ساعت برای محاسبه مدت زمان باکس
+        duration_hours = (timestamp - start_time).total_seconds() / 3600
+        
+        if rsi_val > RSI_OVERSOLD or duration_hours > BOX_LENGTH_BARS:
             boxes.append({
                 "start": start_time,
                 "end": timestamp,
@@ -115,7 +135,9 @@ for timestamp, row in df.iterrows():
         highs.append(row["high"])
         lows.append(row["low"])
         
-        if rsi_val < RSI_OVERBOUGHT or (timestamp - start_time).total_seconds()/3600 > BOX_LENGTH_BARS:
+        duration_hours = (timestamp - start_time).total_seconds() / 3600
+        
+        if rsi_val < RSI_OVERBOUGHT or duration_hours > BOX_LENGTH_BARS:
             boxes.append({
                 "start": start_time,
                 "end": timestamp,
@@ -138,24 +160,38 @@ for i in range(1, len(df)):
     prev_candle = df.iloc[i-1]
     current_candle = df.iloc[i]
     
-    # خروج از معاملات باز
+    # ===== مدیریت معاملات باز =====
     if position:
         exit_price = None
         exit_time = None
         
-        # محاسبه قیمت‌های خروج
-        stop_loss = position["stop_loss"]
-        take_profit = position["take_profit"]
+        # محاسبه سود فعلی
+        if position["type"] == "long":
+            current_profit_pct = (current_candle["close"] - position["entry_price"]) / position["entry_price"]
+        else:
+            current_profit_pct = (position["entry_price"] - current_candle["close"]) / position["entry_price"]
         
-        # شرایط خروج
+        # ===== سیستم ریسک‌فری =====
+        if risk_free_enabled and not position.get("risk_free_activated"):
+            if current_profit_pct >= risk_free_pct:
+                # فعال کردن ریسک‌فری و انتقال استاپ به نقطه ورود
+                if position["type"] == "long":
+                    position["stop_loss"] = position["entry_price"]
+                else:
+                    position["stop_loss"] = position["entry_price"]
+                
+                position["risk_free_activated"] = True
+                print(f"🔒 Risk-free activated for trade at {current_time}")
+        
+        # ===== شرایط خروج =====
         if position["type"] == "long":
             # حد ضرر
-            if current_candle["low"] <= stop_loss:
-                exit_price = stop_loss
+            if current_candle["low"] <= position["stop_loss"]:
+                exit_price = position["stop_loss"]
                 exit_time = current_time
             # حد سود
-            elif current_candle["high"] >= take_profit:
-                exit_price = take_profit
+            elif current_candle["high"] >= position["take_profit"]:
+                exit_price = position["take_profit"]
                 exit_time = current_time
             # بازگشت به باکس
             elif current_candle["close"] < position["box_top"]:
@@ -163,17 +199,17 @@ for i in range(1, len(df)):
                 exit_time = current_time
                 
         elif position["type"] == "short":
-            if current_candle["high"] >= stop_loss:
-                exit_price = stop_loss
+            if current_candle["high"] >= position["stop_loss"]:
+                exit_price = position["stop_loss"]
                 exit_time = current_time
-            elif current_candle["low"] <= take_profit:
-                exit_price = take_profit
+            elif current_candle["low"] <= position["take_profit"]:
+                exit_price = position["take_profit"]
                 exit_time = current_time
             elif current_candle["close"] > position["box_bottom"]:
                 exit_price = current_candle["close"]
                 exit_time = current_time
         
-        # اگر شرط خروج فعال شد
+        # ===== ثبت معامله بسته شده =====
         if exit_price and exit_time:
             # محاسبه سود/زیان
             if position["type"] == "long":
@@ -198,7 +234,7 @@ for i in range(1, len(df)):
             
             position = None
     
-    # ورود به معاملات جدید
+    # ===== ورود به معاملات جدید =====
     if not position and next_box_idx < len(boxes):
         current_box = boxes[next_box_idx]
         
@@ -238,9 +274,11 @@ for i in range(1, len(df)):
                     "stop_loss": current_candle["close"] * (1 - STOP_LOSS_PCT),
                     "take_profit": current_candle["close"] * (1 + take_profit_pct),
                     "box_top": current_box["top"],
-                    "box_bottom": current_box["bottom"]
+                    "box_bottom": current_box["bottom"],
+                    "risk_free_activated": False
                 }
                 next_box_idx += 1
+                print(f"⚡ LONG entry at {current_time} | Price: {current_candle['close']:.6f}")
             
             # سیگنال فروش
             elif (current_box["type"] == "sell" and 
@@ -272,9 +310,11 @@ for i in range(1, len(df)):
                     "stop_loss": current_candle["close"] * (1 + STOP_LOSS_PCT),
                     "take_profit": current_candle["close"] * (1 - take_profit_pct),
                     "box_top": current_box["top"],
-                    "box_bottom": current_box["bottom"]
+                    "box_bottom": current_box["bottom"],
+                    "risk_free_activated": False
                 }
                 next_box_idx += 1
+                print(f"⚡ SHORT entry at {current_time} | Price: {current_candle['close']:.6f}")
 
 # ===== ذخیره نتایج =====
 if trades:
@@ -291,29 +331,79 @@ if trades:
     # ذخیره با فرمت درخواستی
     output_file = f"trades_{SYMBOL}.csv"
     trades_df.to_csv(output_file, index=False)
-    print(f"Trades saved to {output_file}")
+    print(f"\nTrades saved to {output_file}")
 else:
-    print("No trades executed")
+    print("\nNo trades executed")
 
 # ===== گزارش نهایی =====
 print("\n" + "="*50)
-print(f"Symbol: {SYMBOL}")
-print(f"Total Trades: {len(trades)}")
-print(f"Stop Loss: {STOP_LOSS_PCT*100:.2f}% | Take Profit: {TAKE_PROFIT_PCT*100:.2f}%")
-print(f"TP Type: {tp_type}")
+print(f"Backtest Results for {SYMBOL}")
+print("="*50)
+print(f"Strategy Settings:")
+print(f"- Stop Loss: {STOP_LOSS_PCT*100:.2f}%")
+print(f"- Base Take Profit: {TAKE_PROFIT_PCT*100:.2f}%")
+print(f"- TP Type: {tp_type} with spread: {spread_comp*100:.2f}% | SL comp: {sl_comp*100:.2f}%")
+print(f"- Compounding: {'Enabled' if compounding else 'Disabled'}")
+print(f"- Risk-Free: {'Enabled' if risk_free_enabled else 'Disabled'} ({risk_free_pct*100:.2f}%)")
+print(f"- Initial Balance: ${INITIAL_BALANCE:.2f}")
 
 if trades:
     win_trades = [t for t in trades if t['pnl_usd'] > 0]
     loss_trades = [t for t in trades if t['pnl_usd'] <= 0]
+    win_rate = len(win_trades)/len(trades)*100
     
-    print(f"\nWinning Trades: {len(win_trades)} | Losing Trades: {len(loss_trades)}")
-    print(f"Average Profit: {sum(t['pnl_pct']*100 for t in win_trades)/len(win_trades):.4f}%" if win_trades else "No winning trades")
-    print(f"Average Loss: {sum(t['pnl_pct']*100 for t in loss_trades)/len(loss_trades):.4f}%" if loss_trades else "No losing trades")
-    print(f"Max Profit: {max(t['pnl_pct']*100 for t in trades):.4f}%")
-    print(f"Max Loss: {min(t['pnl_pct']*100 for t in trades):.4f}%")
-    print(f"Win Rate: {len(win_trades)/len(trades)*100:.2f}%")
+    print("\n" + "="*50)
+    print(f"Performance Metrics:")
+    print("="*50)
+    print(f"Total Trades: {len(trades)}")
+    print(f"Winning Trades: {len(win_trades)} ({win_rate:.2f}%)")
+    print(f"Losing Trades: {len(loss_trades)}")
+    
+    if win_trades:
+        avg_win = sum(t['pnl_pct'] for t in win_trades)/len(win_trades)*100
+        max_win = max(t['pnl_pct'] for t in trades)*100
+    else:
+        avg_win = max_win = 0.0
+    
+    if loss_trades:
+        avg_loss = sum(t['pnl_pct'] for t in loss_trades)/len(loss_trades)*100
+        max_loss = min(t['pnl_pct'] for t in trades)*100
+    else:
+        avg_loss = max_loss = 0.0
+    
+    profit_factor = abs(sum(t['pnl_usd'] for t in win_trades) / sum(t['pnl_usd'] for t in loss_trades)) if loss_trades else float('inf')
+    
+    print(f"\nAverage Win: {avg_win:.4f}%")
+    print(f"Average Loss: {avg_loss:.4f}%")
+    print(f"Max Win: {max_win:.4f}%")
+    print(f"Max Loss: {max_loss:.4f}%")
+    print(f"Profit Factor: {profit_factor:.2f}")
+    
+    print("\n" + "="*50)
+    print(f"Balance Analysis:")
+    print("="*50)
+    print(f"Final Balance: ${balance:.2f}")
+    print(f"Net Profit: ${balance - INITIAL_BALANCE:.2f}")
+    print(f"Return: {((balance/INITIAL_BALANCE)-1)*100:.2f}%")
+    
+    # محاسبه حداکثر افت سرمایه
+    equity_curve = [INITIAL_BALANCE]
+    for t in trades:
+        equity_curve.append(t['balance'])
+    
+    peak = INITIAL_BALANCE
+    max_drawdown = 0.0
+    for value in equity_curve:
+        if value > peak:
+            peak = value
+        dd = (peak - value) / peak * 100
+        if dd > max_drawdown:
+            max_drawdown = dd
+    
+    print(f"Max Drawdown: {max_drawdown:.2f}%")
+else:
+    print("\nNo trades to analyze")
 
-print(f"\nInitial Balance: ${INITIAL_BALANCE:.2f}")
-print(f"Final Balance: ${balance:.2f}")
-print(f"Net P/L: ${balance - INITIAL_BALANCE:.2f} ({((balance/INITIAL_BALANCE)-1)*100:.2f}%)")
+print("\n" + "="*50)
+print("Backtest completed successfully!")
 print("="*50)
