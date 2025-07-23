@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator
@@ -146,7 +147,14 @@ print("✅ Performance metrics calculated.")
 
 # === رسم نمودار ===
 print("📊 Starting to plot chart...")
-fig = go.Figure()
+# ایجاد ساب‌پلات با دو ردیف
+fig = make_subplots(
+    rows=2, 
+    cols=1,
+    shared_xaxes=True,
+    vertical_spacing=0.05,
+    row_heights=[0.7, 0.3]
+)
 
 # کندل‌ها
 print("📈 Adding candlestick...")
@@ -154,7 +162,7 @@ fig.add_trace(go.Candlestick(
     x=df.index,
     open=df['open'], high=df['high'], low=df['low'], close=df['close'],
     name=symbol_input
-))
+), row=1, col=1)
 
 # EMA
 print("📈 Adding EMA...")
@@ -163,7 +171,7 @@ fig.add_trace(go.Scatter(
     mode='lines', 
     name='EMA (12)',
     line=dict(color='purple', width=2)
-))
+), row=1, col=1)
 
 # باکس‌های RSI
 print("📈 Adding RSI boxes...")
@@ -176,7 +184,8 @@ for box in rsi_boxes:
         y1=box['top'],
         fillcolor="rgba(0,255,0,0.2)" if box['type'] == 'buy' else "rgba(255,0,0,0.2)",
         line=dict(color="green" if box['type'] == 'buy' else "red", width=1),
-        name=f"{box['type']} box"
+        name=f"{box['type']} box",
+        row=1, col=1
     )
 
 # سیگنال‌های ورود
@@ -201,7 +210,7 @@ for trade_type, color, symbol in [('long', 'green', 'triangle-up'), ('short', 'r
                 'Exit Reason: %{customdata[1]}<extra></extra>'
             ),
             text=[f"{trade_type.title()} Entry" for _ in range(len(df_tr))]
-        ))
+        ), row=1, col=1)
 
 # سیگنال‌های خروج با نشانگرهای مختلف
 print("📈 Adding exit signals...")
@@ -236,7 +245,7 @@ for reason, (symbol, color, name) in exit_reasons.items():
                 'Type: %{customdata[1]}<extra></extra>'
             ),
             text=[f"{name}" for _ in range(len(df_exit))]
-        ))
+        ), row=1, col=1)
 
 # خطوط اتصال ورود به خروج
 print("📈 Adding trade connections...")
@@ -249,18 +258,51 @@ for _, trade in trades.iterrows():
         line=dict(color=line_color, width=1, dash='dot'),
         showlegend=False,
         hoverinfo='skip'
-    ))
+    ), row=1, col=1)
+
+# افزودن RSI به عنوان زیرنمودار
+print("📈 Adding RSI subplot...")
+fig.add_trace(go.Scatter(
+    x=df.index,
+    y=df['rsi_3m'],
+    mode='lines',
+    name='RSI (14)',
+    line=dict(color='blue', width=1.5)
+), row=2, col=1)
+
+# خطوط افقی RSI
+fig.add_hline(y=70, line=dict(color='red', width=1, dash='dash'), row=2, col=1)
+fig.add_hline(y=30, line=dict(color='green', width=1, dash='dash'), row=2, col=1)
+fig.add_annotation(
+    xref='x domain', yref='y2',
+    x=0.01, y=70,
+    text="Overbought (70)",
+    showarrow=False,
+    font=dict(size=10),
+    row=2, col=1
+)
+fig.add_annotation(
+    xref='x domain', yref='y2',
+    x=0.01, y=30,
+    text="Oversold (30)",
+    showarrow=False,
+    font=dict(size=10),
+    row=2, col=1
+)
 
 print("📊 Updating layout...")
 fig.update_layout(
     title=f"{symbol_input} RSI-EMA Strategy Analysis",
-    xaxis_title="Date",
-    yaxis_title="Price",
-    xaxis_rangeslider_visible=False,
     height=900,
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     hovermode='x unified'
 )
+
+# تنظیمات محورها
+fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
+fig.update_xaxes(title_text="Date", row=2, col=1)
+fig.update_yaxes(title_text="Price", row=1, col=1)
+fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
 
 # === ایجاد بخش HTML برای معیارها ===
 metrics_html = f"""
