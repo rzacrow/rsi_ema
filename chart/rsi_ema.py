@@ -13,7 +13,7 @@ symbol_input = input("Enter symbol (e.g. XRPUSDT): ").strip().upper()
 script_dir = os.path.dirname(os.path.abspath(__file__))
 base_dir = os.path.dirname(script_dir)
 data_file = os.path.join(base_dir, "data", f"{symbol_input}.csv")
-trades_file = os.path.join(base_dir, f"trades_{symbol_input}.csv")  # تغییر مسیر فایل تریدها
+trades_file = os.path.join(base_dir, f"trades_{symbol_input}.csv")
 
 # بررسی وجود فایل‌ها
 if not os.path.isfile(data_file):
@@ -33,7 +33,7 @@ print(f"📊 Loaded data: {len(df)} rows, from {df.index.min()} to {df.index.max
 
 print("📥 Reading trades CSV...")
 trades = pd.read_csv(trades_file, parse_dates=["entry_time", "exit_time"])
-required_cols = ['entry_time', 'exit_time', 'entry_price', 'exit_price', 'type', 'pnl_pct', 'pnl_usd', 'balance']
+required_cols = ['entry_time', 'exit_time', 'entry_price', 'exit_price', 'type', 'pnl_pct', 'pnl_usd', 'balance', 'exit_reason']
 if not all(col in trades.columns for col in required_cols):
     raise ValueError(f"Required columns missing in trades file: {required_cols}")
 print(f"📊 Loaded trades: {len(trades)} rows, entries from {trades['entry_time'].min()} to {trades['entry_time'].max()}")
@@ -44,20 +44,31 @@ print(f"📊 Filtered trades: {len(trades)} rows")
 
 # === محاسبه اندیکاتورها ===
 print("⚙️ Computing RSI and EMA indicators...")
-df['rsi'] = RSIIndicator(close=df['close'], window=14).rsi()
-df['ema'] = EMAIndicator(close=df['close'], window=12).ema_indicator()  # استفاده از EMA با دوره 12
-print(f"✅ RSI and EMA calculated. Sample RSI: {df['rsi'].iloc[-1]:.2f}, EMA: {df['ema'].iloc[-1]:.2f}")
 
-# === تشخیص باکس‌های RSI ===
+# محاسبه RSI 3 دقیقه‌ای (مطابق استراتژی اصلی)
+df_3m = df.resample('3T').agg({
+    'open': 'first',
+    'high': 'max',
+    'low': 'min',
+    'close': 'last'
+})
+df_3m['rsi_3m'] = RSIIndicator(close=df_3m['close'], window=14).rsi()
+df['rsi_3m'] = df_3m['rsi_3m'].reindex(df.index, method='ffill')
+
+# EMA
+df['ema'] = EMAIndicator(close=df['close'], window=12).ema_indicator()
+print(f"✅ RSI and EMA calculated. Sample RSI: {df['rsi_3m'].iloc[-1]:.2f}, EMA: {df['ema'].iloc[-1]:.2f}")
+
+# === تشخیص باکس‌های RSI (مطابق استراتژی اصلی) ===
 print("⚙️ Detecting RSI boxes...")
-def detect_rsi_boxes(df, rsi_oversold=30, rsi_overbought=70, box_length_hours=50):
+def detect_rsi_boxes(df, rsi_oversold=30, rsi_overbought=70):
     boxes = []
     state = "neutral"
     start_time = None
     highs, lows = [], []
     
     for timestamp, row in df.iterrows():
-        rsi_val = row["rsi"]
+        rsi_val = row["rsi_3m"]  # استفاده از RSI 3 دقیقه‌ای
         
         if state == "neutral":
             if rsi_val < rsi_oversold:
@@ -75,9 +86,7 @@ def detect_rsi_boxes(df, rsi_oversold=30, rsi_overbought=70, box_length_hours=50
             highs.append(row["high"])
             lows.append(row["low"])
             
-            duration_hours = (timestamp - start_time).total_seconds() / 3600
-            
-            if rsi_val > rsi_oversold or duration_hours > box_length_hours:
+            if rsi_val > rsi_oversold:
                 boxes.append({
                     "start": start_time,
                     "end": timestamp,
@@ -91,9 +100,7 @@ def detect_rsi_boxes(df, rsi_oversold=30, rsi_overbought=70, box_length_hours=50
             highs.append(row["high"])
             lows.append(row["low"])
             
-            duration_hours = (timestamp - start_time).total_seconds() / 3600
-            
-            if rsi_val < rsi_overbought or duration_hours > box_length_hours:
+            if rsi_val < rsi_overbought:
                 boxes.append({
                     "start": start_time,
                     "end": timestamp,
@@ -172,8 +179,8 @@ for box in rsi_boxes:
         name=f"{box['type']} box"
     )
 
-# سیگنال‌های ورود/خروج
-print("📈 Adding trade signals...")
+# سیگنال‌های ورود
+print("📈 Adding entry signals...")
 for trade_type, color, symbol in [('long', 'green', 'triangle-up'), ('short', 'red', 'triangle-down')]:
     df_tr = trades[trades['type'] == trade_type]
     if not df_tr.empty:
@@ -182,28 +189,66 @@ for trade_type, color, symbol in [('long', 'green', 'triangle-up'), ('short', 'r
             y=df_tr['entry_price'],
             mode='markers', 
             name=f"{trade_type.title()} Entry",
-            marker=dict(color=color, symbol=symbol, size=10, line=dict(width=1, color='black'))
+            marker=dict(color=color, symbol=symbol, size=10, line=dict(width=1, color='black')),
+            customdata=np.stack((
+                df_tr['pnl_pct'] * 100, 
+                df_tr['exit_reason']
+            ), axis=-1),
+            hovertemplate=(
+                '<b>%{text}</b><br>' +
+                'Entry Price: %{y:.6f}<br>' +
+                'PnL: %{customdata[0]:.2f}%<br>' +
+                'Exit Reason: %{customdata[1]}<extra></extra>'
+            ),
+            text=[f"{trade_type.title()} Entry" for _ in range(len(df_tr))]
         ))
 
-# نقاط خروج
-if not trades.empty:
-    fig.add_trace(go.Scatter(
-        x=trades['exit_time'], 
-        y=trades['exit_price'],
-        mode='markers', 
-        name='Exit',
-        marker=dict(color='blue', symbol='x', size=8, line=dict(width=1, color='black'))
-    ))
+# سیگنال‌های خروج با نشانگرهای مختلف
+print("📈 Adding exit signals...")
+exit_reasons = {
+    'TP': ('circle', 'green', 'Take Profit'),
+    'SL': ('x', 'red', 'Stop Loss'),
+    'Box': ('square', 'blue', 'Box Exit')
+}
+
+for reason, (symbol, color, name) in exit_reasons.items():
+    df_exit = trades[trades['exit_reason'] == reason]
+    if not df_exit.empty:
+        fig.add_trace(go.Scatter(
+            x=df_exit['exit_time'], 
+            y=df_exit['exit_price'],
+            mode='markers', 
+            name=name,
+            marker=dict(
+                color=color, 
+                symbol=symbol, 
+                size=10, 
+                line=dict(width=1, color='black')
+            ),
+            customdata=np.stack((
+                df_exit['pnl_pct'] * 100, 
+                df_exit['type']
+            ), axis=-1),
+            hovertemplate=(
+                '<b>%{text}</b><br>' +
+                'Exit Price: %{y:.6f}<br>' +
+                'PnL: %{customdata[0]:.2f}%<br>' +
+                'Type: %{customdata[1]}<extra></extra>'
+            ),
+            text=[f"{name}" for _ in range(len(df_exit))]
+        ))
 
 # خطوط اتصال ورود به خروج
 print("📈 Adding trade connections...")
 for _, trade in trades.iterrows():
+    line_color = 'green' if trade['pnl_pct'] > 0 else 'red'
     fig.add_trace(go.Scatter(
         x=[trade['entry_time'], trade['exit_time']],
         y=[trade['entry_price'], trade['exit_price']],
         mode='lines',
-        line=dict(color='green' if trade['pnl_pct'] > 0 else 'red', width=1, dash='dot'),
-        showlegend=False
+        line=dict(color=line_color, width=1, dash='dot'),
+        showlegend=False,
+        hoverinfo='skip'
     ))
 
 print("📊 Updating layout...")
@@ -213,7 +258,8 @@ fig.update_layout(
     yaxis_title="Price",
     xaxis_rangeslider_visible=False,
     height=900,
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    hovermode='x unified'
 )
 
 # === ایجاد بخش HTML برای معیارها ===
