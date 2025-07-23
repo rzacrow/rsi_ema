@@ -46,7 +46,7 @@ RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 INITIAL_BALANCE = 100.0
 COMPENSATION_PORTION = 0.25  # 25% از ضرر انباشته در هر ترید جبران می‌شود
-MAX_POST_BOX_CANDLES = 15  # حداکثر 15 کندل بعد از آخرین کندل باکس
+MAX_POST_BOX_CANDLES = 120  # حداکثر 15 کندل بعد از آخرین کندل باکس
 
 # ===== توابع کمکی =====
 def compute_rsi(series: pd.Series, length: int) -> pd.Series:
