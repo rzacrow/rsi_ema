@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 SYMBOL = input("Enter cryptocurrency symbol (e.g. XRPUSDT): ").strip().upper()
 STOP_LOSS_PCT = float(input("Enter stop loss percentage (e.g. 0.3 for 0.3%): ")) / 100
 TAKE_PROFIT_PCT = float(input("Enter take profit percentage (e.g. 0.5 for 0.5%): ")) / 100
-RISK_PER_TRADE = 0.01  # ریسک 1% از بالانس در هر معامله
+RISK_PER_TRADE = float(input("Enter risk per trade percentage (e.g. 1 for 1%): ")) / 100
 
 # ===== تنظیمات اثر مرکب =====
 compounding = input("Enable compounding? (y/n): ").lower().strip() == 'y'
@@ -45,9 +45,7 @@ EMA_LENGTH = 12
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
 INITIAL_BALANCE = 100.0
-COMPENSATION_PORTION = 0.25  # 25% از ضرر انباشته در هر ترید جبران می‌شود
-MAX_COMPENSATION = 0.10  # حداکثر جبران 10% (اصلاح شده)
-MAX_POST_BOX_CANDLES = 200  # حداکثر 15 کندل بعد از آخرین کندل باکس
+MAX_POST_BOX_CANDLES = 200  # حداکثر 200 کندل بعد از آخرین کندل باکس
 
 # ===== توابع کمکی =====
 def compute_rsi(series: pd.Series, length: int) -> pd.Series:
@@ -131,7 +129,6 @@ for timestamp, row in df.iterrows():
                 "end": None,
                 "top": row["high"],
                 "bottom": row["low"],
-                "last_candle_price": row["close"],
                 "type": "buy",
                 "id": len(boxes) + 1,
                 "post_trade_taken": False
@@ -146,7 +143,6 @@ for timestamp, row in df.iterrows():
                 "end": None,
                 "top": row["high"],
                 "bottom": row["low"],
-                "last_candle_price": row["close"],
                 "type": "sell",
                 "id": len(boxes) + 1,
                 "post_trade_taken": False
@@ -159,8 +155,6 @@ for timestamp, row in df.iterrows():
         if row["low"] < current_box["bottom"]:
             current_box["bottom"] = row["low"]
         
-        # ذخیره آخرین قیمت کندل
-        current_box["last_candle_price"] = row["close"]
         current_box["end"] = timestamp
         
         if rsi_val > RSI_OVERSOLD:
@@ -176,8 +170,6 @@ for timestamp, row in df.iterrows():
         if row["low"] < current_box["bottom"]:
             current_box["bottom"] = row["low"]
         
-        # ذخیره آخرین قیمت کندل
-        current_box["last_candle_price"] = row["close"]
         current_box["end"] = timestamp
         
         if rsi_val < RSI_OVERBOUGHT:
@@ -198,7 +190,8 @@ balance = INITIAL_BALANCE
 open_positions = []  # لیست معاملات باز
 cumulative_sl_loss = 0.0  # ضرر انباشته از استاپ‌لاس‌ها
 
-# متغیر برای پیگیری آخرین باکس فعال
+# لیست برای پیگیری باکس‌های فعال
+active_boxes = []
 current_active_box = None
 
 for i in range(1, len(df)):
@@ -215,25 +208,29 @@ for i in range(1, len(df)):
         
         # محاسبه سود فعلی
         if position["type"] == "long":
-            current_price_pct = (current_candle["close"] - position["entry_price"]) / position["entry_price"]
+            current_price = current_candle["close"]
+            entry_price = position["entry_price"]
+            stop_loss = position["stop_loss"]
+            take_profit = position["take_profit"]
         else:
-            current_price_pct = (position["entry_price"] - current_candle["close"]) / position["entry_price"]
+            current_price = current_candle["close"]
+            entry_price = position["entry_price"]
+            stop_loss = position["stop_loss"]
+            take_profit = position["take_profit"]
         
         # ===== سیستم ریسک‌فری اصلاح شده =====
         if risk_free_enabled and not position.get("risk_free_activated"):
             # محاسبه سطح ریسک فری
             if position["type"] == "long":
-                risk_free_level = position["entry_price"] * (1 - risk_free_pct)
-            else:
-                risk_free_level = position["entry_price"] * (1 + risk_free_pct)
-            
-            # فعال‌سازی فقط در صورت حرکت قیمت در جهت مخالف
-            if position["type"] == "long":
+                risk_free_level = entry_price * (1 - risk_free_pct)
+                # فعال‌سازی فقط در صورت حرکت قیمت در جهت مخالف
                 if current_candle["low"] <= risk_free_level:
                     position["stop_loss"] = risk_free_level
                     position["risk_free_activated"] = True
                     print(f"🔒 Risk-free activated for LONG at {current_time}")
             else:  # short
+                risk_free_level = entry_price * (1 + risk_free_pct)
+                # فعال‌سازی فقط در صورت حرکت قیمت در جهت مخالف
                 if current_candle["high"] >= risk_free_level:
                     position["stop_loss"] = risk_free_level
                     position["risk_free_activated"] = True
@@ -242,85 +239,87 @@ for i in range(1, len(df)):
         # ===== شرایط خروج =====
         if position["type"] == "long":
             # حد ضرر
-            if current_candle["low"] <= position["stop_loss"]:
-                exit_price = position["stop_loss"]
+            if current_candle["low"] <= stop_loss:
+                exit_price = stop_loss
                 exit_time = current_time
                 exit_reason = "SL"
                 # ثبت ضرر انباشته (فقط درصد)
-                loss_pct = abs(position["entry_price"] - exit_price) / position["entry_price"]
+                loss_pct = abs(entry_price - exit_price) / entry_price
                 cumulative_sl_loss += loss_pct
             # حد سود
-            elif current_candle["high"] >= position["take_profit"]:
-                exit_price = position["take_profit"]
+            elif current_candle["high"] >= take_profit:
+                exit_price = take_profit
                 exit_time = current_time
                 exit_reason = "TP"
                 
         elif position["type"] == "short":
-            if current_candle["high"] >= position["stop_loss"]:
-                exit_price = position["stop_loss"]
+            if current_candle["high"] >= stop_loss:
+                exit_price = stop_loss
                 exit_time = current_time
                 exit_reason = "SL"
-                loss_pct = abs(position["entry_price"] - exit_price) / position["entry_price"]
+                loss_pct = abs(entry_price - exit_price) / entry_price
                 cumulative_sl_loss += loss_pct
-            elif current_candle["low"] <= position["take_profit"]:
-                exit_price = position["take_profit"]
+            elif current_candle["low"] <= take_profit:
+                exit_price = take_profit
                 exit_time = current_time
                 exit_reason = "TP"
         
         # ===== ثبت معامله بسته شده =====
         if exit_price and exit_reason:
-            # محاسبه سود/زیان
-            if position["type"] == "long":
-                pnl_pct = (exit_price - position["entry_price"]) / position["entry_price"]
-            else:
-                pnl_pct = (position["entry_price"] - exit_price) / position["entry_price"]
+            # محاسبه سود/زیان بر اساس اندازه پوزیشن
+            position_size = position["position_size"]
             
-            pnl_usd = pnl_pct * position["position_value"]
+            if position["type"] == "long":
+                pnl_usd = (exit_price - entry_price) * position_size
+            else:
+                pnl_usd = (entry_price - exit_price) * position_size
+            
+            # به‌روزرسانی بالانس
+            prev_balance = balance
             balance += pnl_usd
             
-            # کسر جبران ضرر فقط هنگام TP
-            if exit_reason == "TP" and "compensation_added" in position:
-                cumulative_sl_loss -= position["compensation_added"]
-                if cumulative_sl_loss < 0:
-                    cumulative_sl_loss = 0
-                print(f"🔧 Deducting SL compensation: {position['compensation_added']*100:.4f}%")
+            # محاسبه درصد سود/زیان نسبت به سرمایه اختصاص یافته
+            risk_amount = position["risk_amount"]
+            pnl_pct_equity = pnl_usd / risk_amount if risk_amount != 0 else 0
             
             # ذخیره معامله
             trades.append({
                 "type": position["type"],
                 "entry_time": position["entry_time"],
-                "entry_price": position["entry_price"],
+                "entry_price": entry_price,
                 "exit_time": exit_time,
                 "exit_price": exit_price,
-                "pnl_pct": pnl_pct,
+                "pnl_pct": pnl_pct_equity,
                 "pnl_usd": pnl_usd,
                 "balance": balance,
                 "exit_reason": exit_reason,
                 "box_id": position["box_id"]
             })
             
-            print(f"⛔ Exit {position['type']} trade | Reason: {exit_reason} | PnL: {pnl_pct*100:.4f}%")
+            print(f"⛔ Exit {position['type']} trade | "
+                  f"Reason: {exit_reason} | "
+                  f"PnL: {pnl_pct_equity*100:.4f}% | "
+                  f"Balance: ${balance:.2f}")
+            
             positions_to_remove.append(position)
     
     # حذف معاملات بسته شده از لیست معاملات باز
     for position in positions_to_remove:
         open_positions.remove(position)
     
-    # ===== شناسایی باکس فعلی =====
-    # بررسی آیا در محدوده زمانی یک باکس هستیم
-    active_box = None
+    # ===== به‌روزرسانی باکس‌های فعال =====
+    # حذف باکس‌های منقضی شده و اضافه کردن باکس‌های جدید
+    active_boxes = []
     for box in boxes:
-        if box["start"] <= current_time <= box["end"]:
-            active_box = box
-            break
-    
-    # اگر باکس جدیدی شروع شده، آن را به عنوان باکس فعلی تنظیم کن
-    if active_box and (current_active_box is None or active_box["id"] != current_active_box["id"]):
-        current_active_box = active_box
-        print(f"📦 New active box detected: {current_active_box['type']} (ID: {current_active_box['id']})")
+        # محاسبه زمان پایان باکس + 200 کندل بعد
+        end_time = box["end"] + timedelta(minutes=MAX_POST_BOX_CANDLES)
+        
+        # اگر زمان فعلی در محدوده باکس باشد
+        if box["start"] <= current_time <= end_time:
+            active_boxes.append(box)
     
     # ===== ورود به معاملات جدید =====
-    if current_active_box:
+    for box in active_boxes:
         # تعیین حجم معامله بر اساس اثر مرکب
         risk_balance = balance if compounding else INITIAL_BALANCE
         
@@ -329,13 +328,28 @@ for i in range(1, len(df)):
         take_profit_pct = base_tp
         compensation_added = 0.0
         
-        # محاسبه جبران ضرر
+        # ===== سیستم جبران ضرر پلکانی =====
         if tp_type in [3, 4] and cumulative_sl_loss > 0:
-            # محاسبه جبران به عنوان درصدی از ضرر انباشته
-            compensation_added = min(cumulative_sl_loss * COMPENSATION_PORTION, MAX_COMPENSATION)
-            take_profit_pct += compensation_added
-            print(f"🔧 Applying SL compensation: {compensation_added*100:.4f}% (Cumulative SL: {cumulative_sl_loss*100:.4f}%)")
+            if cumulative_sl_loss <= 0.01:  # تا 1%
+                compensation_added = cumulative_sl_loss
+                cumulative_sl_loss = 0  # کل ضرر انباشته کسر می‌شود
+                print(f"🔧 Full SL compensation: {compensation_added*100:.4f}%")
+            elif cumulative_sl_loss <= 0.02:  # 1-2%
+                compensation_added = cumulative_sl_loss * 0.5
+                cumulative_sl_loss -= compensation_added  # نصف ضرر کسر می‌شود
+                print(f"🔧 Half SL compensation: {compensation_added*100:.4f}% | Remaining: {cumulative_sl_loss*100:.4f}%")
+            elif cumulative_sl_loss <= 0.03:  # 2-3%
+                compensation_added = cumulative_sl_loss * (1/3)
+                cumulative_sl_loss -= compensation_added  # یک سوم ضرر کسر می‌شود
+                print(f"🔧 One-third SL compensation: {compensation_added*100:.4f}% | Remaining: {cumulative_sl_loss*100:.4f}%")
+            else:  # بالای 3%
+                compensation_added = 0
+                print(f"🔧 No SL compensation (above 3%): {cumulative_sl_loss*100:.4f}%")
             
+            # اعمال جبران به TP فعلی
+            if compensation_added > 0:
+                take_profit_pct += compensation_added
+        
         # اعمال جبران اسپرد برای نوع 2 و 3
         if tp_type in [2, 3]:
             take_profit_pct += spread_comp
@@ -345,55 +359,50 @@ for i in range(1, len(df)):
         trade_type = None
         signal_details = ""
         
-        # در طول مدت باکس
-        if current_time <= current_active_box["end"]:
-            if current_active_box["type"] == "buy":  # باکس اشباع فروش (خرید)
-                if prev_candle["ema"] <= current_active_box["top"] and current_candle["ema"] > current_active_box["top"]:
+        # در طول مدت باکس (از اولین تا آخرین کندل)
+        if current_time <= box["end"]:
+            if box["type"] == "buy":  # باکس اشباع فروش (خرید)
+                if prev_candle["ema"] < box["top"] and current_candle["ema"] > box["top"]:
                     entry_signal = True
                     trade_type = "long"
-                    signal_details = f"EMA exited from TOP of box ({current_active_box['top']:.6f})"
+                    signal_details = f"EMA exited from TOP of box ({box['top']:.6f})"
             
-            elif current_active_box["type"] == "sell":  # باکس اشباع خرید (فروش)
-                if prev_candle["ema"] >= current_active_box["bottom"] and current_candle["ema"] < current_active_box["bottom"]:
+            elif box["type"] == "sell":  # باکس اشباع خرید (فروش)
+                if prev_candle["ema"] > box["bottom"] and current_candle["ema"] < box["bottom"]:
                     entry_signal = True
                     trade_type = "short"
-                    signal_details = f"EMA exited from BOTTOM of box ({current_active_box['bottom']:.6f})"
+                    signal_details = f"EMA exited from BOTTOM of box ({box['bottom']:.6f})"
         
-        # بعد از پایان باکس (تا 15 کندل بعد)
-        elif not current_active_box["post_trade_taken"]:
-            # محاسبه تعداد کندل‌های گذشته از پایان باکس
-            post_candle_count = (current_time - current_active_box["end"]).total_seconds() / 60
+        # بعد از پایان باکس (تا 200 کندل بعد)
+        elif not box["post_trade_taken"]:
+            # شرط ورود برای اشباع فروش (خرید)
+            if box["type"] == "buy":
+                if current_candle["ema"] > box["top"]:
+                    entry_signal = True
+                    trade_type = "long"
+                    box["post_trade_taken"] = True
+                    signal_details = f"After Box: EMA above TOP of box ({box['top']:.6f})"
             
-            if post_candle_count <= MAX_POST_BOX_CANDLES:
-                if current_active_box["type"] == "buy":  # باکس اشباع فروش (خرید)
-                    if prev_candle["ema"] <= current_active_box["last_candle_price"] and current_candle["ema"] > current_active_box["last_candle_price"]:
-                        entry_signal = True
-                        trade_type = "long"
-                        current_active_box["post_trade_taken"] = True
-                        signal_details = f"EMA exited from LAST CANDLE ({current_active_box['last_candle_price']:.6f})"
-                
-                elif current_active_box["type"] == "sell":  # باکس اشباع خرید (فروش)
-                    if prev_candle["ema"] >= current_active_box["last_candle_price"] and current_candle["ema"] < current_active_box["last_candle_price"]:
-                        entry_signal = True
-                        trade_type = "short"
-                        current_active_box["post_trade_taken"] = True
-                        signal_details = f"EMA exited from LAST CANDLE ({current_active_box['last_candle_price']:.6f})"
+            # شرط ورود برای اشباع خرید (فروش)
+            elif box["type"] == "sell":
+                if current_candle["ema"] < box["bottom"]:
+                    entry_signal = True
+                    trade_type = "short"
+                    box["post_trade_taken"] = True
+                    signal_details = f"After Box: EMA below BOTTOM of box ({box['bottom']:.6f})"
         
         # ===== ایجاد معامله اگر سیگنال وجود داشت =====
         if entry_signal:
-            # جلوگیری از تقسیم بر صفر
-            stop_loss_pct_val = max(STOP_LOSS_PCT, 0.0001)
-            
-            # محاسبه حجم معامله
-            position_size = (risk_balance * RISK_PER_TRADE) / (current_candle["close"] * stop_loss_pct_val)
-            position_value = position_size * current_candle["close"]
-            
+            # محاسبه حجم معامله بر اساس ریسک تعیین شده
+            risk_amount = risk_balance * RISK_PER_TRADE
+            position_size = risk_amount / current_candle["close"]
+
             # تعیین حد ضرر و حد سود
             if trade_type == "long":
-                stop_loss = current_candle["close"] * (1 - stop_loss_pct_val)
+                stop_loss = current_candle["close"] * (1 - STOP_LOSS_PCT)
                 take_profit = current_candle["close"] * (1 + take_profit_pct)
             else:
-                stop_loss = current_candle["close"] * (1 + stop_loss_pct_val)
+                stop_loss = current_candle["close"] * (1 + STOP_LOSS_PCT)
                 take_profit = current_candle["close"] * (1 - take_profit_pct)
             
             new_position = {
@@ -401,53 +410,59 @@ for i in range(1, len(df)):
                 "entry_time": current_time,
                 "entry_price": current_candle["close"],
                 "position_size": position_size,
-                "position_value": position_value,
+                "risk_amount": risk_amount,  # مقدار سرمایه اختصاص یافته
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
-                "box_top": current_active_box["top"],
-                "box_bottom": current_active_box["bottom"],
-                "box_id": current_active_box["id"],
+                "box_id": box["id"],
                 "risk_free_activated": False,
                 "compensation_added": compensation_added  # ذخیره میزان جبران
             }
             
             open_positions.append(new_position)
-            print(f"⚡ {trade_type.upper()} entry at {current_time} | Price: {current_candle['close']:.6f}")
-            print(f"   Box: {current_active_box['type']} | TP: {take_profit_pct*100:.4f}%")
+            print(f"⚡ {trade_type.upper()} entry at {current_time} | "
+                  f"Price: {current_candle['close']:.6f} | "
+                  f"Risk: ${risk_amount:.4f}")
+            print(f"   Box: {box['type']} ({box['id']}) | "
+                  f"TP: {take_profit_pct*100:.4f}% | "
+                  f"SL comp: {compensation_added*100:.4f}%")
             print(f"   Signal: {signal_details}")
-            print(f"   Open positions: {len(open_positions)}")
-    
-    # ===== اگر از محدوده باکس خارج شدیم، باکس فعلی را پاک کن =====
-    if current_active_box and current_time > current_active_box["end"] + timedelta(minutes=MAX_POST_BOX_CANDLES):
-        print(f"📭 Active box {current_active_box['id']} expired (15 candles passed)")
-        current_active_box = None
 
 # ===== بستن معاملات باز در پایان بکتست =====
 for position in open_positions:
     exit_price = df.iloc[-1]["close"]
     exit_time = df.index[-1]
+    exit_reason = "End of Backtest"
+
+    position_size = position["position_size"]
+    entry_price = position["entry_price"]
     
     if position["type"] == "long":
-        pnl_pct = (exit_price - position["entry_price"]) / position["entry_price"]
+        pnl_usd = (exit_price - entry_price) * position_size
     else:
-        pnl_pct = (position["entry_price"] - exit_price) / position["entry_price"]
+        pnl_usd = (entry_price - exit_price) * position_size
     
-    pnl_usd = pnl_pct * position["position_value"]
+    # به‌روزرسانی بالانس
     balance += pnl_usd
     
+    # محاسبه درصد سود/زیان
+    risk_amount = position["risk_amount"]
+    pnl_pct_equity = pnl_usd / risk_amount if risk_amount != 0 else 0
+
     trades.append({
         "type": position["type"],
         "entry_time": position["entry_time"],
-        "entry_price": position["entry_price"],
+        "entry_price": entry_price,
         "exit_time": exit_time,
         "exit_price": exit_price,
-        "pnl_pct": pnl_pct,
+        "pnl_pct": pnl_pct_equity,
         "pnl_usd": pnl_usd,
         "balance": balance,
-        "exit_reason": "End of Backtest",
+        "exit_reason": exit_reason,
         "box_id": position["box_id"]
     })
-    print(f"⛔ Closing open {position['type']} trade at end of backtest | PnL: {pnl_pct*100:.4f}%")
+    print(f"⛔ Closing open {position['type']} trade | "
+          f"PnL: {pnl_pct_equity*100:.4f}% | "
+          f"Balance: ${balance:.2f}")
 
 # ===== ذخیره نتایج =====
 if trades:
