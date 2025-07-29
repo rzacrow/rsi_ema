@@ -5,9 +5,10 @@ import time
 import os
 
 # === تنظیمات اولیه ورودی کاربر ===
-symbol_input = input("Enter symbol (e.g. BTCUSDT): ").strip().upper()
-# تبدیل برای درخواست به بایننس
-symbol = f"{symbol_input[:3]}/{symbol_input[3:]}"
+first_currency = input("Enter first currency (e.g. BTC): ").strip().upper()
+second_currency = input("Enter second currency (e.g. USDT): ").strip().upper()
+symbol_input = f"{first_currency}{second_currency}"
+symbol = f"{first_currency}/{second_currency}"
 
 timeframe = "1m"
 chunk_days = 10  # دریافت داده در بازه‌های 10 روزه برای جلوگیری از محدودیت

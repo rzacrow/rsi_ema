@@ -62,55 +62,66 @@ print(f"✅ RSI and EMA calculated. Sample RSI: {df['rsi_3m'].iloc[-1]:.2f}, EMA
 
 # === تشخیص باکس‌های RSI (مطابق استراتژی اصلی) ===
 print("⚙️ Detecting RSI boxes...")
-def detect_rsi_boxes(df, rsi_oversold=30, rsi_overbought=70):
+def detect_rsi_boxes(df, rsi_oversold=30, rsi_overbought=70, min_box_len=20):
     boxes = []
     state = "neutral"
     start_time = None
     highs, lows = [], []
     
-    for timestamp, row in df.iterrows():
+    for idx, (timestamp, row) in enumerate(df.iterrows()):
         rsi_val = row["rsi_3m"]  # استفاده از RSI 3 دقیقه‌ای
-        
         if state == "neutral":
             if rsi_val < rsi_oversold:
                 state = "oversold"
                 start_time = timestamp
                 highs = [row["high"]]
                 lows = [row["low"]]
+                start_idx = idx
             elif rsi_val > rsi_overbought:
                 state = "overbought"
                 start_time = timestamp
                 highs = [row["high"]]
                 lows = [row["low"]]
-        
+                start_idx = idx
         elif state == "oversold":
             highs.append(row["high"])
             lows.append(row["low"])
-            
             if rsi_val > rsi_oversold:
+                end_idx = idx
+                # Ensure box is at least min_box_len candles long
+                if end_idx - start_idx + 1 < min_box_len:
+                    # Extend end_idx if possible
+                    end_idx = min(start_idx + min_box_len - 1, len(df) - 1)
+                    end_time = df.index[end_idx]
+                else:
+                    end_time = timestamp
                 boxes.append({
                     "start": start_time,
-                    "end": timestamp,
+                    "end": end_time,
                     "top": max(highs),
                     "bottom": min(lows),
                     "type": "buy"
                 })
                 state = "neutral"
-        
         elif state == "overbought":
             highs.append(row["high"])
             lows.append(row["low"])
-            
             if rsi_val < rsi_overbought:
+                end_idx = idx
+                # Ensure box is at least min_box_len candles long
+                if end_idx - start_idx + 1 < min_box_len:
+                    end_idx = min(start_idx + min_box_len - 1, len(df) - 1)
+                    end_time = df.index[end_idx]
+                else:
+                    end_time = timestamp
                 boxes.append({
                     "start": start_time,
-                    "end": timestamp,
+                    "end": end_time,
                     "top": max(highs),
                     "bottom": min(lows),
                     "type": "sell"
                 })
                 state = "neutral"
-    
     return boxes
 
 rsi_boxes = detect_rsi_boxes(df)
@@ -217,6 +228,8 @@ print("📈 Adding exit signals...")
 exit_reasons = {
     'TP': ('circle', 'green', 'Take Profit'),
     'SL': ('x', 'red', 'Stop Loss'),
+    'EMA_SL': ('x', 'red', 'EMA SL'),
+    'Risk-Free': ('square', 'yellow', 'Risk-Free'),
     'Box': ('square', 'blue', 'Box Exit')
 }
 
