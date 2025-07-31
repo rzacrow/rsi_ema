@@ -33,11 +33,12 @@ if tp_type in [2, 3]:
 
 # ===== تنظیمات ریسک‌فری =====
 risk_free_enabled = input("Enable risk-free mode? (y/n): ").lower().strip() == 'y'
-risk_free_pct = 0.0
+RISK_FREE_THRESHOLD = 0.005  # 0.5% default threshold for risk-free activation
 
 if risk_free_enabled:
-    risk_free_input = input("Enter risk-free percentage (e.g. 0.3 for 0.3%): ")
-    risk_free_pct = float(risk_free_input)/100 if risk_free_input else 0.003
+    print(f"Risk-free mode ENABLED with {RISK_FREE_THRESHOLD*100:.1f}% threshold")
+else:
+    print("Risk-free mode DISABLED")
 
 # ===== پارامترهای ثابت استراتژی =====
 RSI_LENGTH = 14
@@ -236,31 +237,17 @@ for i in range(1, len(df)):
         # Risk-free logic
         if risk_free_enabled and not position.get("risk_free_active"):
             if position["type"] == "long":
-                risk_free_level = entry_price * (1 + risk_free_pct)
+                risk_free_level = entry_price * (1 + RISK_FREE_THRESHOLD)
                 if position["max_price"] >= risk_free_level:
                     position["risk_free_active"] = True
-                    position["risk_free_level"] = risk_free_level
-                    print(f"🔒 Risk-free mode ACTIVATED for LONG at {current_time} | Level: {risk_free_level:.6f}")
+                    position["stop_loss"] = entry_price  # Set SL to entry price (breakeven)
+                    print(f"🔒 Risk-free mode ACTIVATED for LONG at {current_time} | SL moved to entry: {entry_price:.6f}")
             else:
-                risk_free_level = entry_price * (1 - risk_free_pct)
+                risk_free_level = entry_price * (1 - RISK_FREE_THRESHOLD)
                 if position["min_price"] <= risk_free_level:
                     position["risk_free_active"] = True
-                    position["risk_free_level"] = risk_free_level
-                    print(f"🔒 Risk-free mode ACTIVATED for SHORT at {current_time} | Level: {risk_free_level:.6f}")
-        risk_free_exit = False
-        if risk_free_enabled and position.get("risk_free_active"):
-            if position["type"] == "long":
-                if current_candle["close"] < position["risk_free_level"] and current_candle["close"] < current_candle["open"]:
-                    exit_price = current_candle["close"]
-                    exit_time = current_time
-                    exit_reason = "Risk-Free"
-                    risk_free_exit = True
-            else:
-                if current_candle["close"] > position["risk_free_level"] and current_candle["close"] > current_candle["open"]:
-                    exit_price = current_candle["close"]
-                    exit_time = current_time
-                    exit_reason = "Risk-Free"
-                    risk_free_exit = True
+                    position["stop_loss"] = entry_price  # Set SL to entry price (breakeven)
+                    print(f"🔒 Risk-free mode ACTIVATED for SHORT at {current_time} | SL moved to entry: {entry_price:.6f}")
         # EMA-based SL
         box = next((b for b in boxes if b["id"] == position["box_id"]), None)
         if box:
@@ -275,7 +262,7 @@ for i in range(1, len(df)):
                     exit_time = current_time
                     exit_reason = "EMA_SL"
         # Normal exit
-        if not risk_free_exit and exit_reason is None:
+        if exit_reason is None:
             if position["type"] == "long":
                 if current_candle["low"] <= position["stop_loss"]:
                     exit_price = position["stop_loss"]
@@ -346,8 +333,6 @@ for i in range(1, len(df)):
                 last_trade_result = "TP"
             elif exit_reason == "SL":
                 last_trade_result = "SL"
-            elif exit_reason == "Risk-Free":
-                last_trade_result = "RF"
             elif exit_reason == "EMA_SL":
                 last_trade_result = "EMA_SL"
     for position in positions_to_remove:
@@ -377,12 +362,8 @@ for i in range(1, len(df)):
         compensation_added = 0.0
         # Always apply compensation logic for every new trade (including re-entries)
         if tp_type in [3, 4] and cumulative_sl_loss > 0:
-            if cumulative_sl_loss <= 0.01:
+            if cumulative_sl_loss <= 0.03:
                 compensation_added = cumulative_sl_loss
-            elif cumulative_sl_loss <= 0.02:
-                compensation_added = cumulative_sl_loss * 0.5
-            elif cumulative_sl_loss <= 0.03:
-                compensation_added = cumulative_sl_loss * (1/3)
             else:
                 compensation_added = 0
             take_profit_pct += compensation_added
@@ -402,7 +383,7 @@ for i in range(1, len(df)):
                 entry_signal = True
                 trade_type = "long"
                 signal_details = f"EMA above TOP and close above EMA ({box['top']:.6f})"
-        if box_open_position == False and last_trade_result in ["SL", "RF", "EMA_SL"]:
+        if box_open_position == False and last_trade_result in ["SL", "EMA_SL"]:
             if box["type"] == "sell":
                 if current_candle["ema"] < box["bottom"] and current_candle["close"] < current_candle["ema"]:
                     entry_signal = True
@@ -504,7 +485,7 @@ print(f"- Stop Loss: {STOP_LOSS_PCT*100:.4f}%")
 print(f"- Base Take Profit: {TAKE_PROFIT_PCT*100:.4f}%")
 print(f"- TP Type: {tp_type} | Spread comp: {spread_comp*100:.4f}% | Cumulative SL Loss: {cumulative_sl_loss*100:.4f}%")
 print(f"- Compounding: {'Enabled' if compounding else 'Disabled'}")
-print(f"- Risk-Free: {'Enabled' if risk_free_enabled else 'Disabled'} ({risk_free_pct*100:.4f}%)")
+print(f"- Risk-Free: {'Enabled' if risk_free_enabled else 'Disabled'} (Threshold: {RISK_FREE_THRESHOLD*100:.1f}%)")
 print(f"- Initial Balance: ${INITIAL_BALANCE:.2f}")
 
 if trades:
