@@ -83,7 +83,7 @@ def compute_ichimoku(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def detect_tenkan_kijun_cross(df: pd.DataFrame) -> list:
-    """تشخیص تقاطع Tenkan و Kijun"""
+    """تشخیص تقاطع Tenkan و Kijun با ذخیره high/low کندل"""
     crosses = []
     
     for i in range(1, len(df)):
@@ -98,7 +98,9 @@ def detect_tenkan_kijun_cross(df: pd.DataFrame) -> list:
                 'index': i,
                 'timestamp': df.index[i],
                 'type': 'bullish',
-                'price': df.iloc[i]['close']
+                'price': df.iloc[i]['close'],
+                'candle_high': df.iloc[i]['high'],
+                'candle_low': df.iloc[i]['low']
             })
         
         # Bearish cross (Tenkan crosses below Kijun)
@@ -107,7 +109,9 @@ def detect_tenkan_kijun_cross(df: pd.DataFrame) -> list:
                 'index': i,
                 'timestamp': df.index[i],
                 'type': 'bearish',
-                'price': df.iloc[i]['close']
+                'price': df.iloc[i]['close'],
+                'candle_high': df.iloc[i]['high'],
+                'candle_low': df.iloc[i]['low']
             })
     
     return crosses
@@ -117,25 +121,32 @@ def detect_cloud_switch(df: pd.DataFrame, start_idx: int, end_idx: int) -> dict:
     if start_idx >= len(df) or end_idx >= len(df):
         return None
     
-    # Check if cloud switches from bullish to bearish or vice versa
+    # ذخیره آخرین وضعیت ابر قبل از بازه
+    prev_bullish = None
+    if start_idx > DISPLACEMENT:
+        span_a = df.iloc[start_idx-1]['senkou_span_a']
+        span_b = df.iloc[start_idx-1]['senkou_span_b']
+        prev_bullish = span_a > span_b if not pd.isna(span_a) and not pd.isna(span_b) else None
+    
+    # بررسی تغییر فاز در بازه مشخص
     for i in range(start_idx, min(end_idx + 1, len(df))):
         if i < DISPLACEMENT:
             continue
             
-        # Get current and previous cloud status
         curr_span_a = df.iloc[i]['senkou_span_a']
         curr_span_b = df.iloc[i]['senkou_span_b']
         
-        if i > 0:
-            prev_span_a = df.iloc[i-1]['senkou_span_a']
-            prev_span_b = df.iloc[i-1]['senkou_span_b']
-        else:
+        if pd.isna(curr_span_a) or pd.isna(curr_span_b):
             continue
         
-        # Check for cloud switch
         curr_bullish = curr_span_a > curr_span_b
-        prev_bullish = prev_span_a > prev_span_b
         
+        # اولین وضعیت در بازه
+        if prev_bullish is None:
+            prev_bullish = curr_bullish
+            continue
+        
+        # تشخیص تغییر فاز
         if curr_bullish != prev_bullish:
             return {
                 'index': i,
@@ -144,6 +155,8 @@ def detect_cloud_switch(df: pd.DataFrame, start_idx: int, end_idx: int) -> dict:
                 'span_a': curr_span_a,
                 'span_b': curr_span_b
             }
+        
+        prev_bullish = curr_bullish
     
     return None
 
@@ -184,11 +197,22 @@ print(f"Tenkan-Kijun crosses detected: {len(crosses)}")
 boxes = []
 valid_crosses = []
 
-for cross in crosses:
+for i, cross in enumerate(crosses):
     cross_idx = cross['index']
     cross_type = cross['type']
     
-    # Check for cloud switch in the specified interval
+    # بررسی وجود کراس‌های جدید در بازه 22-30 کندلی
+    skip_cross = False
+    for future_cross in crosses[i+1:]:
+        if future_cross['index'] <= cross_idx + CLOUD_SWITCH_CHECK_END:
+            print(f"⚠️ New cross detected at {future_cross['timestamp']} - Skipping current cross")
+            skip_cross = True
+            break
+    
+    if skip_cross:
+        continue
+
+    # محدوده بررسی تغییر فاز ابر
     start_check_idx = cross_idx + CLOUD_SWITCH_CHECK_START
     end_check_idx = cross_idx + CLOUD_SWITCH_CHECK_END
     
@@ -206,44 +230,26 @@ for cross in crosses:
         print(f"❌ Bearish cross with bullish cloud switch - invalid at {cross['timestamp']}")
         continue
     
-    # Create box
-    cross_candle = df.iloc[cross_idx]
-    cloud_switch_candle = df.iloc[cloud_switch['index']]
-    
-    if cross_type == 'bullish':
-        # Long setup
-        box = {
-            "start": cross['timestamp'],
-            "end": cloud_switch['timestamp'],
-            "top": cross_candle['high'],  # High of cross candle
-            "bottom": cross_candle['low'],  # Low of cross candle
-            "type": "buy",
-            "id": len(boxes) + 1,
-            "ema_entered": False,
-            "ema_has_entered": False,
-            "tp_hit": False,
-            "cross_idx": cross_idx,
-            "cloud_switch_idx": cloud_switch['index']
-        }
-    else:
-        # Short setup
-        box = {
-            "start": cross['timestamp'],
-            "end": cloud_switch['timestamp'],
-            "top": cross_candle['high'],  # High of cross candle
-            "bottom": cross_candle['low'],  # Low of cross candle
-            "type": "sell",
-            "id": len(boxes) + 1,
-            "ema_entered": False,
-            "ema_has_entered": False,
-            "tp_hit": False,
-            "cross_idx": cross_idx,
-            "cloud_switch_idx": cloud_switch['index']
-        }
+    # Create box with all required keys
+    box = {
+        "start": cross['timestamp'],
+        "end": cloud_switch['timestamp'],
+        "top": cross['candle_high'],
+        "bottom": cross['candle_low'],
+        "type": "buy" if cross_type == 'bullish' else "sell",
+        "id": len(boxes) + 1,
+        "ema_has_entered": False,
+        "tp_hit": False,
+        "cross_idx": cross_idx,
+        "cloud_switch_idx": cloud_switch['index']
+    }
     
     boxes.append(box)
     valid_crosses.append(cross)
-    print(f"✅ Valid {cross_type} setup detected at {cross['timestamp']} with cloud switch at {cloud_switch['timestamp']}")
+    print(f"✅ Valid {box['type']} setup detected | "
+          f"Start: {box['start']} | "
+          f"End: {box['end']} | "
+          f"Range: {box['bottom']:.6f}-{box['top']:.6f}")
 
 print(f"Valid boxes detected: {len(boxes)} (Buy: {sum(1 for b in boxes if b['type']=='buy')} | Sell: {sum(1 for b in boxes if b['type']=='sell')})")
 
@@ -262,7 +268,7 @@ for i in range(1, len(df)):
     current_candle = df.iloc[i]
     prev_candle = df.iloc[i-1]
 
-    # ===== Box activation: only switch to a new box when a new one is formed =====
+    # ===== Box activation =====
     if active_box is None or (active_box_index + 1 < len(boxes) and current_time >= boxes[active_box_index + 1]["start"]):
         # Move to the next box if time has reached its start
         for idx, box in enumerate(boxes):
@@ -270,18 +276,20 @@ for i in range(1, len(df)):
                 active_box = box
                 active_box_index = idx
                 last_trade_result = None
-        # After loop, active_box is the latest box whose start <= current_time
+                print(f"📦 Activated box {box['id']} ({box['type']}) at {current_time}")
 
-    # ===== EMA entry gate: set ema_has_entered only once per box =====
+    # ===== EMA entry gate =====
     if active_box and not active_box["ema_has_entered"]:
         if active_box["type"] == "buy":
             # For long: EMA must be above the box high
             if current_candle["ema"] > active_box["top"]:
                 active_box["ema_has_entered"] = True
+                print(f"📈 EMA entered BUY box {active_box['id']} at {current_time}")
         else:
             # For short: EMA must be below the box low
             if current_candle["ema"] < active_box["bottom"]:
                 active_box["ema_has_entered"] = True
+                print(f"📉 EMA entered SELL box {active_box['id']} at {current_time}")
 
     # ===== مدیریت معاملات باز =====
     positions_to_remove = []
@@ -289,11 +297,13 @@ for i in range(1, len(df)):
         exit_price = None
         exit_time = None
         exit_reason = None
+        
         if position["type"] == "long":
             current_price = current_candle["close"]
             entry_price = position["entry_price"]
             stop_loss = position["stop_loss"]
             take_profit = position["take_profit"]
+            
             if not position.get("max_price"):
                 position["max_price"] = entry_price
             position["max_price"] = max(position["max_price"], current_candle["high"])
@@ -302,9 +312,11 @@ for i in range(1, len(df)):
             entry_price = position["entry_price"]
             stop_loss = position["stop_loss"]
             take_profit = position["take_profit"]
+            
             if not position.get("min_price"):
                 position["min_price"] = entry_price
             position["min_price"] = min(position["min_price"], current_candle["low"])
+        
         # Risk-free logic
         if risk_free_enabled and not position.get("risk_free_active"):
             if position["type"] == "long":
@@ -319,6 +331,7 @@ for i in range(1, len(df)):
                     position["risk_free_active"] = True
                     position["stop_loss"] = entry_price  # Set SL to entry price (breakeven)
                     print(f"🔒 Risk-free mode ACTIVATED for SHORT at {current_time} | SL moved to entry: {entry_price:.6f}")
+        
         # EMA-based SL
         box = next((b for b in boxes if b["id"] == position["box_id"]), None)
         if box:
@@ -332,6 +345,7 @@ for i in range(1, len(df)):
                     exit_price = current_candle["close"]
                     exit_time = current_time
                     exit_reason = "EMA_SL"
+        
         # Normal exit
         if exit_reason is None:
             if position["type"] == "long":
@@ -339,10 +353,6 @@ for i in range(1, len(df)):
                     exit_price = position["stop_loss"]
                     exit_time = current_time
                     exit_reason = "SL"
-                    loss_pct = max(0, abs(entry_price - exit_price) / entry_price)
-                    if exit_price < entry_price:
-                        cumulative_sl_loss += loss_pct
-                        print(f"📉 SL hit! Added {loss_pct*100:.4f}% to cumulative loss | Total: {cumulative_sl_loss*100:.4f}%")
                 elif current_candle["high"] >= take_profit:
                     exit_price = take_profit
                     exit_time = current_time
@@ -352,14 +362,11 @@ for i in range(1, len(df)):
                     exit_price = position["stop_loss"]
                     exit_time = current_time
                     exit_reason = "SL"
-                    loss_pct = max(0, abs(entry_price - exit_price) / entry_price)
-                    if exit_price > entry_price:
-                        cumulative_sl_loss += loss_pct
-                        print(f"📉 SL hit! Added {loss_pct*100:.4f}% to cumulative loss | Total: {cumulative_sl_loss*100:.4f}%")
                 elif current_candle["low"] <= take_profit:
                     exit_price = take_profit
                     exit_time = current_time
                     exit_reason = "TP"
+        
         # Register closed trade
         if exit_price and exit_reason:
             position_size = position["position_size"]
@@ -367,15 +374,18 @@ for i in range(1, len(df)):
                 pnl_usd = (exit_price - entry_price) * position_size
             else:
                 pnl_usd = (entry_price - exit_price) * position_size
+            
             prev_balance = balance
             balance += pnl_usd
             risk_amount = position["risk_amount"]
             pnl_pct_equity = pnl_usd / risk_amount if risk_amount != 0 else 0
+            
             # Add to cumulative_sl_loss for both SL and EMA_SL
             if exit_reason in ["SL", "EMA_SL"]:
                 loss_pct = max(0, abs(entry_price - exit_price) / entry_price)
                 cumulative_sl_loss += loss_pct
                 print(f"📉 {exit_reason} hit! Added {loss_pct*100:.4f}% to cumulative loss | Total: {cumulative_sl_loss*100:.4f}%")
+            
             trades.append({
                 "type": position["type"],
                 "entry_time": position["entry_time"],
@@ -390,26 +400,31 @@ for i in range(1, len(df)):
                 "risk_free_activated": position.get("risk_free_active", False),
                 "compensation_added": position.get("compensation_added", 0.0)
             })
+            
             print(f"⛔ Exit {position['type']} trade | "
                   f"Reason: {exit_reason} | "
                   f"PnL: {pnl_pct_equity*100:.4f}% | "
                   f"Balance: ${balance:.2f}")
+            
             positions_to_remove.append(position)
+            
             # Mark TP hit for the box if TP was hit
             if exit_reason == "TP":
                 for b in boxes:
                     if b["id"] == position["box_id"]:
                         b["tp_hit"] = True
+            
             if exit_reason == "TP":
                 last_trade_result = "TP"
             elif exit_reason == "SL":
                 last_trade_result = "SL"
             elif exit_reason == "EMA_SL":
                 last_trade_result = "EMA_SL"
+    
     for position in positions_to_remove:
         open_positions.remove(position)
 
-    # After trade exits, handle SL compensation reset/reduction only for TP exits with compensation
+    # After trade exits, handle SL compensation reset/reduction
     if trades and trades[-1]["exit_reason"] == "TP" and tp_type in [3, 4] and trades[-1].get("compensation_added", 0) > 0:
         comp = trades[-1]["compensation_added"]
         if comp == cumulative_sl_loss:
@@ -424,22 +439,25 @@ for i in range(1, len(df)):
         else:
             print(f"🔧 No SL compensation (above 3%): {cumulative_sl_loss*100:.4f}%")
 
-    # ===== ورود به معاملات جدید فقط برای باکس فعال =====
+    # ===== ورود به معاملات جدید =====
     if active_box and active_box["ema_has_entered"] and not active_box["tp_hit"]:
         box = active_box
         risk_balance = balance if compounding else INITIAL_BALANCE
         base_tp = TAKE_PROFIT_PCT
         take_profit_pct = base_tp
         compensation_added = 0.0
-        # Always apply compensation logic for every new trade (including re-entries)
+        
+        # Always apply compensation logic for every new trade
         if tp_type in [3, 4] and cumulative_sl_loss > 0:
             if cumulative_sl_loss <= 0.03:
                 compensation_added = cumulative_sl_loss
             else:
                 compensation_added = 0
             take_profit_pct += compensation_added
+        
         if tp_type in [2, 3]:
             take_profit_pct += spread_comp
+        
         entry_signal = False
         trade_type = None
         signal_details = ""
@@ -452,6 +470,7 @@ for i in range(1, len(df)):
                 entry_signal = True
                 trade_type = "short"
                 signal_details = f"EMA below box bottom ({box['bottom']:.6f})"
+        
         if not box_open_position and box["type"] == "buy":
             # Long entry: EMA above box high
             if current_candle["ema"] > box["top"]:
@@ -460,7 +479,7 @@ for i in range(1, len(df)):
                 signal_details = f"EMA above box top ({box['top']:.6f})"
         
         # Re-entry conditions
-        if box_open_position == False and last_trade_result in ["SL", "EMA_SL"]:
+        if not box_open_position and last_trade_result in ["SL", "EMA_SL"]:
             if box["type"] == "sell":
                 if current_candle["ema"] < box["bottom"]:
                     entry_signal = True
@@ -475,12 +494,14 @@ for i in range(1, len(df)):
         if entry_signal:
             risk_amount = risk_balance * RISK_PER_TRADE
             position_size = risk_amount / current_candle["close"]
+            
             if trade_type == "long":
                 stop_loss = current_candle["close"] * (1 - STOP_LOSS_PCT)
                 take_profit = current_candle["close"] * (1 + take_profit_pct)
             else:
                 stop_loss = current_candle["close"] * (1 + STOP_LOSS_PCT)
                 take_profit = current_candle["close"] * (1 - take_profit_pct)
+            
             new_position = {
                 "type": trade_type,
                 "entry_time": current_time,
@@ -493,6 +514,7 @@ for i in range(1, len(df)):
                 "risk_free_activated": False,
                 "compensation_added": compensation_added
             }
+            
             open_positions.append(new_position)
             print(f"⚡ {trade_type.upper()} entry at {current_time} | "
                   f"Price: {current_candle['close']:.6f} | "
@@ -637,7 +659,7 @@ if trades:
                 "type": box["type"],
                 "trades": len(box_trades),
                 "profit": box_profit,
-                "ema_entered": box.get("ema_entered", False)
+                "ema_entered": box.get("ema_has_entered", False)
             }
     
     print("\n" + "="*50)
