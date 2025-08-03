@@ -13,7 +13,6 @@ CONVERSION_LINE = 9 * 5  # 45
 BASE_LINE = 26 * 5       # 130
 LEADING_B_PERIOD = 52 * 5 # 260
 LAGGING_SPAN = 26        # بدون تغییر
-MAX_REVERSE_CANDLES = 1
 
 # ===== توابع ایچیموکو =====
 def ichimoku(df, conversion_line=CONVERSION_LINE, base_line=BASE_LINE, 
@@ -52,10 +51,9 @@ def ichimoku(df, conversion_line=CONVERSION_LINE, base_line=BASE_LINE,
     }
 
 def ichi_signals(df, conversion_line=CONVERSION_LINE, base_line=BASE_LINE, 
-                 lagging_span=LAGGING_SPAN, leading_b_period=LEADING_B_PERIOD, 
-                 max_reverse_candles=MAX_REVERSE_CANDLES):
+                 lagging_span=LAGGING_SPAN, leading_b_period=LEADING_B_PERIOD):
     """
-    تولید سیگنال‌های معاملاتی بر اساس استراتژی اصلاح شده
+    تولید سیگنال‌های معاملاتی با منطق دقیق‌تر
     """
     ichi = ichimoku(df, conversion_line, base_line, lagging_span, leading_b_period)
     
@@ -75,147 +73,175 @@ def ichi_signals(df, conversion_line=CONVERSION_LINE, base_line=BASE_LINE,
         if (cloud[i] == 'red' and cloud[i-1] == 'green') or (cloud[i] == 'green' and cloud[i-1] == 'red'):
             changes.append(i + lagging_span)
     
+    # شناسایی ابرهای منحصر به فرد
+    cloud_ranges = []
+    for i in range(len(changes)):
+        start = changes[i]
+        end = changes[i+1] if i < len(changes)-1 else len(highs)
+        cloud_ranges.append((start, end))
+    
     signals = []
-    # ذخیره نقاط ورود به ابر برای جلوگیری از سیگنال‌های تکراری
-    cloud_entries = set()
+    processed_clouds = set()
     
     for i in range(30, len(highs)):
         # جلوگیری از خطای اندیس
         if i < lagging_span or i-1 < lagging_span:
             continue
             
-        # شناسایی ورود به ابر
-        entry_detected = False
-        entry_type = None
+        # شناسایی ابر فعلی
+        current_cloud = None
+        for idx, (start, end) in enumerate(cloud_ranges):
+            if start <= i < end:
+                current_cloud = idx
+                break
         
-        # تشخیص ورود از بالا (برای فروش)
-        if (highs[i-1] > upper[i-1-lagging_span] and 
-            highs[i] <= upper[i-lagging_span] and 
-            i not in cloud_entries):
-            entry_detected = True
-            entry_type = 'sell'
-            cloud_entries.add(i)
-        
-        # تشخیص ورود از پایین (برای خرید)
-        elif (lows[i-1] < lower[i-1-lagging_span] and 
-              lows[i] >= lower[i-lagging_span] and 
-              i not in cloud_entries):
-            entry_detected = True
-            entry_type = 'buy'
-            cloud_entries.add(i)
-        
-        if not entry_detected:
+        # اگر ابر قبلاً پردازش شده یا ابر شناسایی نشد، ادامه بده
+        if current_cloud is None or current_cloud in processed_clouds:
             continue
         
-        # جستجوی اولین شکست ابر پس از ورود
-        breakout_index = None
-        reverse_count = 0
-        
-        # برای سیگنال فروش: جستجوی خروج از پایین ابر
-        if entry_type == 'sell':
-            for j in range(i, min(i+30, len(lows))):
-                if j < lagging_span or j-1 < lagging_span:
-                    continue
+        # بررسی شکست پایین ابر (شرایط فروش)
+        if lows[i] <= lower[i-lagging_span] and lows[i-1] > lower[i-lagging_span-1]:
+            # بررسی آیا شکست تک کندلی است (ورود و خروج در یک کندل)
+            single_candle_break = (highs[i-1] > upper[i-1-lagging_span])
+            
+            if single_candle_break:
+                # شکست تک کندلی: بررسی کندل بعدی
+                if i+1 >= len(opens):
+                    continue  # کندل بعدی وجود ندارد
                 
-                # شمارش کندل‌های صعودی (مخالف روند)
-                if opens[j] < closes[j]:
-                    reverse_count += 1
+                # کندل بعدی باید نزولی باشد
+                next_candle_bearish = opens[i+1] > closes[i+1]
+                if not next_candle_bearish:
+                    continue  # شرط تأیید نشد
                 
-                # شناسایی شکست به پایین
-                if (lows[j] <= lower[j-lagging_span] and 
-                    lows[j-1] > lower[j-1-lagging_span]):
-                    breakout_index = j
-                    break
-        
-        # برای سیگنال خرید: جستجوی خروج از بالا ابر
-        elif entry_type == 'buy':
-            for j in range(i, min(i+30, len(highs))):
-                if j < lagging_span or j-1 < lagging_span:
-                    continue
-                
-                # شمارش کندل‌های نزولی (مخالف روند)
-                if opens[j] > closes[j]:
-                    reverse_count += 1
-                
-                # شناسایی شکست به بالا
-                if (highs[j] >= upper[j-lagging_span] and 
-                    highs[j-1] < upper[j-1-lagging_span]):
-                    breakout_index = j
-                    break
-        
-        # بررسی شرایط ورود
-        if breakout_index is not None and reverse_count <= max_reverse_candles:
-            # تعیین قیمت ورود
-            if entry_type == 'sell':
-                entry_price = lower[breakout_index-lagging_span]  # ورود روی اسپن پایین
+                # ثبت سیگنال فروش
+                signals.append({
+                    'type': 'sell',
+                    'entry_index': i+1,  # ورود در کندل بعدی
+                    'entry_time': times[i+1],
+                    'entry_price': lower[i+1-lagging_span],
+                    'cloud_index': current_cloud,
+                    'cloud_upper': upper[i-lagging_span],
+                    'cloud_lower': lower[i-lagging_span]
+                })
             else:
-                entry_price = upper[breakout_index-lagging_span]  # ورود روی اسپن بالا
+                # شکست معمولی: کندل‌ها از بالا وارد شده‌اند
+                if highs[i-1] > upper[i-1-lagging_span]:
+                    # ثبت سیگنال فروش
+                    signals.append({
+                        'type': 'sell',
+                        'entry_index': i,
+                        'entry_time': times[i],
+                        'entry_price': lower[i-lagging_span],
+                        'cloud_index': current_cloud,
+                        'cloud_upper': upper[i-lagging_span],
+                        'cloud_lower': lower[i-lagging_span]
+                    })
             
-            signals.append({
-                'type': entry_type,
-                'confirmation_index': i,          # نقطه ورود به ابر
-                'entry_index': breakout_index,    # نقطه شکست ابر
-                'entry_time': times[breakout_index],
-                'entry_price': entry_price        # قیمت اسپن مربوطه
-            })
-    
-    # فیلتر سیگنال‌ها بر اساس تغییرات ابر
-    verified = []
-    for change_idx in changes:
-        for j in range(len(signals)):
-            signal = signals[j]
+            # ابر پردازش شده است
+            processed_clouds.add(current_cloud)
+        
+        # بررسی شکست بالای ابر (شرایط خرید)
+        elif highs[i] >= upper[i-lagging_span] and highs[i-1] < upper[i-1-lagging_span]:
+            # بررسی آیا شکست تک کندلی است (ورود و خروج در یک کندل)
+            single_candle_break = (lows[i-1] < lower[i-1-lagging_span])
             
-            if (signal['confirmation_index'] >= change_idx and 
-                (j == 0 or signals[j-1]['confirmation_index'] < change_idx)):
+            if single_candle_break:
+                # شکست تک کندلی: بررسی کندل بعدی
+                if i+1 >= len(opens):
+                    continue  # کندل بعدی وجود ندارد
                 
-                if signal not in verified:
-                    verified.append(signal)
+                # کندل بعدی باید صعودی باشد
+                next_candle_bullish = opens[i+1] < closes[i+1]
+                if not next_candle_bullish:
+                    continue  # شرط تأیید نشد
+                
+                # ثبت سیگنال خرید
+                signals.append({
+                    'type': 'buy',
+                    'entry_index': i+1,  # ورود در کندل بعدی
+                    'entry_time': times[i+1],
+                    'entry_price': upper[i+1-lagging_span],
+                    'cloud_index': current_cloud,
+                    'cloud_upper': upper[i-lagging_span],
+                    'cloud_lower': lower[i-lagging_span]
+                })
+            else:
+                # شکست معمولی: کندل‌ها از پایین وارد شده‌اند
+                if lows[i-1] < lower[i-1-lagging_span]:
+                    # ثبت سیگنال خرید
+                    signals.append({
+                        'type': 'buy',
+                        'entry_index': i,
+                        'entry_time': times[i],
+                        'entry_price': upper[i-lagging_span],
+                        'cloud_index': current_cloud,
+                        'cloud_upper': upper[i-lagging_span],
+                        'cloud_lower': lower[i-lagging_span]
+                    })
+            
+            # ابر پردازش شده است
+            processed_clouds.add(current_cloud)
     
-    verified.sort(key=lambda x: x['entry_index'])
-    
-    return verified
+    return signals
+
 def simulate_trade(signal, df, stop_loss_pct, take_profit_pct):
-    entry_idx = signal['entry_index']    # نقطه شکست ابر
+    """
+    شبیه‌سازی معامله با استاپ لاس پویا
+    """
+    entry_idx = signal['entry_index']
     entry_time = signal['entry_time']
     entry_price = signal['entry_price']
+    cloud_upper = signal['cloud_upper']
+    cloud_lower = signal['cloud_lower']
     
-    # تعیین حد ضرر و حد سود
+    # تعیین حد ضرر پویا بر اساس مرزهای ابر
     if signal['type'] == 'buy':
-        stop_loss = entry_price * (1 - stop_loss_pct)
-        take_profit = entry_price * (1 + take_profit_pct)
+        stop_loss_price = min(
+            entry_price * (1 - stop_loss_pct),
+            cloud_lower  # استاپ لاس پویا: رسیدن به مرز پایین ابر
+        )
+        take_profit_price = entry_price * (1 + take_profit_pct)
     else:
-        stop_loss = entry_price * (1 + stop_loss_pct)
-        take_profit = entry_price * (1 - take_profit_pct)
+        stop_loss_price = max(
+            entry_price * (1 + stop_loss_pct),
+            cloud_upper  # استاپ لاس پویا: رسیدن به مرز بالای ابر
+        )
+        take_profit_price = entry_price * (1 - take_profit_pct)
     
     # شبیه‌سازی معامله از نقطه ورود تا پایان
     exit_reason = "End of Data"
     exit_price = df['close'].iloc[-1]
     exit_time = df.index[-1]
     
-    # بررسی خروج با SL یا TP (شروع از کندل بعد از نقطه ورود)
+    # بررسی خروج با SL یا TP
     for i in range(entry_idx + 1, len(df)):
         candle = df.iloc[i]
         
         if signal['type'] == 'buy':
-            if candle['low'] <= stop_loss:
+            # استاپ لاس: رسیدن به حد ضرر یا مرز پایین ابر
+            if candle['low'] <= stop_loss_price:
                 exit_reason = "SL"
-                exit_price = stop_loss
+                exit_price = stop_loss_price
                 exit_time = df.index[i]
                 break
-            elif candle['high'] >= take_profit:
+            # تیک پروفیت: رسیدن به حد سود
+            elif candle['high'] >= take_profit_price:
                 exit_reason = "TP"
-                exit_price = take_profit
+                exit_price = take_profit_price
                 exit_time = df.index[i]
                 break
         else:
-            if candle['high'] >= stop_loss:
+            # استاپ لاس: رسیدن به حد ضرر یا مرز بالای ابر
+            if candle['high'] >= stop_loss_price:
                 exit_reason = "SL"
-                exit_price = stop_loss
+                exit_price = stop_loss_price
                 exit_time = df.index[i]
                 break
-            elif candle['low'] <= take_profit:
+            # تیک پروفیت: رسیدن به حد سود
+            elif candle['low'] <= take_profit_price:
                 exit_reason = "TP"
-                exit_price = take_profit
+                exit_price = take_profit_price
                 exit_time = df.index[i]
                 break
     
@@ -234,6 +260,7 @@ def simulate_trade(signal, df, stop_loss_pct, take_profit_pct):
         'pnl_pct': pnl,
         'exit_reason': exit_reason
     }
+
 # ===== خواندن داده‌ها =====
 file_path = f"data/{SYMBOL}.csv"
 if not os.path.exists(file_path):
@@ -301,7 +328,8 @@ if trades:
     # آمار خروج
     tp_exits = [t for t in trades if t['exit_reason'] == 'TP']
     sl_exits = [t for t in trades if t['exit_reason'] == 'SL']
-    print(f"TP Exits: {len(tp_exits)} | SL Exits: {len(sl_exits)}")
+    end_exits = [t for t in trades if t['exit_reason'] == 'End of Data']
+    print(f"TP Exits: {len(tp_exits)} | SL Exits: {len(sl_exits)} | End Exits: {len(end_exits)}")
     
     if win_trades:
         avg_win = sum(t['pnl_pct'] for t in win_trades)/len(win_trades)
