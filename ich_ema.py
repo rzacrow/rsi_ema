@@ -117,49 +117,44 @@ def detect_tenkan_kijun_cross(df: pd.DataFrame) -> list:
     return crosses
 
 def detect_cloud_switch(df: pd.DataFrame, start_idx: int, end_idx: int) -> dict:
-    """تشخیص تغییر وضعیت ابر در بازه مشخص"""
+    """تشخیص تغییر وضعیت ابر در بازه مشخص با اعتبارسنجی دقیق"""
     if start_idx >= len(df) or end_idx >= len(df):
         return None
     
-    # ذخیره آخرین وضعیت ابر قبل از بازه
-    prev_bullish = None
-    if start_idx > DISPLACEMENT:
-        span_a = df.iloc[start_idx-1]['senkou_span_a']
-        span_b = df.iloc[start_idx-1]['senkou_span_b']
-        prev_bullish = span_a > span_b if not pd.isna(span_a) and not pd.isna(span_b) else None
-    
     # بررسی تغییر فاز در بازه مشخص
     for i in range(start_idx, min(end_idx + 1, len(df))):
-        if i < DISPLACEMENT:
+        if i < DISPLACEMENT:  # ابر قبل از جابجایی 26 کندلی وجود ندارد
             continue
             
+        # وضعیت فعلی ابر
         curr_span_a = df.iloc[i]['senkou_span_a']
         curr_span_b = df.iloc[i]['senkou_span_b']
         
         if pd.isna(curr_span_a) or pd.isna(curr_span_b):
             continue
+            
+        # وضعیت قبلی ابر (کندل قبل)
+        prev_span_a = df.iloc[i-1]['senkou_span_a']
+        prev_span_b = df.iloc[i-1]['senkou_span_b']
         
+        if pd.isna(prev_span_a) or pd.isna(prev_span_b):
+            continue
+            
+        # تشخیص تغییر فاز
+        prev_bullish = prev_span_a > prev_span_b
         curr_bullish = curr_span_a > curr_span_b
         
-        # اولین وضعیت در بازه
-        if prev_bullish is None:
-            prev_bullish = curr_bullish
-            continue
-        
-        # تشخیص تغییر فاز
-        if curr_bullish != prev_bullish:
+        if prev_bullish != curr_bullish:
             return {
                 'index': i,
                 'timestamp': df.index[i],
-                'type': 'bullish' if curr_bullish else 'bearish',
+                'old_state': 'bullish' if prev_bullish else 'bearish',
+                'new_state': 'bullish' if curr_bullish else 'bearish',
                 'span_a': curr_span_a,
                 'span_b': curr_span_b
             }
-        
-        prev_bullish = curr_bullish
     
     return None
-
 # ===== خواندن داده‌ها =====
 file_path = f"data/{SYMBOL}.csv"
 if not os.path.exists(file_path):
@@ -192,7 +187,6 @@ df["prev_ema"] = df["ema"].shift(1)
 # ===== تشخیص تقاطع‌های Tenkan و Kijun =====
 crosses = detect_tenkan_kijun_cross(df)
 print(f"Tenkan-Kijun crosses detected: {len(crosses)}")
-
 # ===== تشخیص باکس‌ها بر اساس Ichimoku =====
 boxes = []
 valid_crosses = []
@@ -200,58 +194,115 @@ valid_crosses = []
 for i, cross in enumerate(crosses):
     cross_idx = cross['index']
     cross_type = cross['type']
+    cross_timestamp = cross['timestamp']
     
-    # بررسی وجود کراس‌های جدید در بازه 22-30 کندلی
-    skip_cross = False
-    for future_cross in crosses[i+1:]:
+    # بررسی وجود کراس‌های جدید در بازه فعلی (از کندل بعد از کراس تا 30 کندل بعد)
+    has_new_cross = False
+    for j in range(i+1, len(crosses)):
+        future_cross = crosses[j]
+        # اگر کراس جدید در بازه 1 تا 30 کندل بعدی قرار دارد
         if future_cross['index'] <= cross_idx + CLOUD_SWITCH_CHECK_END:
-            print(f"⚠️ New cross detected at {future_cross['timestamp']} - Skipping current cross")
-            skip_cross = True
+            print(f"⚠️ کراس جدید در {future_cross['timestamp']} شناسایی شد (در بازه 30 کندلی) - نادیده گرفتن کراس فعلی در {cross_timestamp}")
+            has_new_cross = True
             break
     
-    if skip_cross:
+    if has_new_cross:
         continue
 
-    # محدوده بررسی تغییر فاز ابر
+    # محدوده بررسی تغییر فاز ابر (از 22 تا 30 کندل بعد از کراس)
     start_check_idx = cross_idx + CLOUD_SWITCH_CHECK_START
     end_check_idx = cross_idx + CLOUD_SWITCH_CHECK_END
     
-    cloud_switch = detect_cloud_switch(df, start_check_idx, end_check_idx)
+    # تشخیص تغییر فاز ابر در بازه مشخص
+    cloud_switch = None
+    for idx in range(start_check_idx, min(end_check_idx + 1, len(df))):
+        if idx < DISPLACEMENT:  # ابر قبل از جابجایی 26 کندلی وجود ندارد
+            continue
+            
+        # وضعیت فعلی ابر
+        curr_span_a = df.iloc[idx]['senkou_span_a']
+        curr_span_b = df.iloc[idx]['senkou_span_b']
+        
+        if pd.isna(curr_span_a) or pd.isna(curr_span_b):
+            continue
+            
+        # وضعیت قبلی ابر (کندل قبل)
+        prev_span_a = df.iloc[idx-1]['senkou_span_a']
+        prev_span_b = df.iloc[idx-1]['senkou_span_b']
+        
+        if pd.isna(prev_span_a) or pd.isna(prev_span_b):
+            continue
+            
+        # تشخیص وضعیت ابر
+        prev_bullish = prev_span_a > prev_span_b
+        curr_bullish = curr_span_a > curr_span_b
+        
+        # بررسی تغییر فاز ابر
+        if cross_type == 'bearish' and prev_bullish and not curr_bullish:
+            # تغییر از مثبت به منفی برای کراس نزولی
+            cloud_switch = {
+                'index': idx,
+                'timestamp': df.index[idx],
+                'type': 'bearish',
+                'span_a': curr_span_a,
+                'span_b': curr_span_b
+            }
+            break
+            
+        elif cross_type == 'bullish' and not prev_bullish and curr_bullish:
+            # تغییر از منفی به مثبت برای کراس صعودی
+            cloud_switch = {
+                'index': idx,
+                'timestamp': df.index[idx],
+                'type': 'bullish',
+                'span_a': curr_span_a,
+                'span_b': curr_span_b
+            }
+            break
     
     if cloud_switch is None:
-        print(f"❌ No cloud switch detected for {cross_type} cross at {cross['timestamp']}")
+        print(f"❌ تغییر فاز ابر مناسب برای کراس {cross_type} در {cross_timestamp} یافت نشد")
         continue
     
-    # Validate cloud switch matches cross type
-    if cross_type == 'bullish' and cloud_switch['type'] == 'bearish':
-        print(f"❌ Bullish cross with bearish cloud switch - invalid at {cross['timestamp']}")
-        continue
-    elif cross_type == 'bearish' and cloud_switch['type'] == 'bullish':
-        print(f"❌ Bearish cross with bullish cloud switch - invalid at {cross['timestamp']}")
-        continue
+    print(f"✅ تغییر فاز ابر شناسایی شد: {cloud_switch['timestamp']} (از {'مثبت' if cross_type == 'bearish' else 'منفی'} به {'منفی' if cross_type == 'bearish' else 'مثبت'})")
     
-    # Create box with all required keys
-    box = {
-        "start": cross['timestamp'],
-        "end": cloud_switch['timestamp'],
-        "top": cross['candle_high'],
-        "bottom": cross['candle_low'],
-        "type": "buy" if cross_type == 'bullish' else "sell",
-        "id": len(boxes) + 1,
-        "ema_has_entered": False,
-        "tp_hit": False,
-        "cross_idx": cross_idx,
-        "cloud_switch_idx": cloud_switch['index']
-    }
+    # ایجاد باکس با مرزهای صحیح
+    if cross_type == 'bullish':
+        box = {
+            "start": cross_timestamp,
+            "end": cloud_switch['timestamp'],
+            "top": cross['candle_high'],  # High کندل کراس
+            "bottom": cross['candle_low'],  # Low کندل کراس
+            "type": "buy",
+            "id": len(boxes) + 1,
+            "ema_has_entered": False,
+            "tp_hit": False,
+            "cross_idx": cross_idx,
+            "cloud_switch_idx": cloud_switch['index']
+        }
+    else:  # کراس نزولی
+        box = {
+            "start": cross_timestamp,
+            "end": cloud_switch['timestamp'],
+            "top": cross['candle_high'],  # High کندل کراس
+            "bottom": cross['candle_low'],  # Low کندل کراس
+            "type": "sell",
+            "id": len(boxes) + 1,
+            "ema_has_entered": False,
+            "tp_hit": False,
+            "cross_idx": cross_idx,
+            "cloud_switch_idx": cloud_switch['index']
+        }
     
     boxes.append(box)
     valid_crosses.append(cross)
-    print(f"✅ Valid {box['type']} setup detected | "
-          f"Start: {box['start']} | "
-          f"End: {box['end']} | "
-          f"Range: {box['bottom']:.6f}-{box['top']:.6f}")
+    print(f"✅ باکس معتبر {box['type']} ایجاد شد | "
+          f"شروع: {box['start']} | "
+          f"پایان: {box['end']} | "
+          f"سقف: {box['top']:.6f} | "
+          f"کف: {box['bottom']:.6f}")
 
-print(f"Valid boxes detected: {len(boxes)} (Buy: {sum(1 for b in boxes if b['type']=='buy')} | Sell: {sum(1 for b in boxes if b['type']=='sell')})")
+print(f"Number of valid boxes: {len(boxes)} (Buy: {sum(1 for b in boxes if b['type']=='buy')} | Sell: {sum(1 for b in boxes if b['type']=='sell')})")
 
 # ===== شبیه‌سازی معاملات =====
 trades = []

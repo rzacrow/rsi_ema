@@ -180,50 +180,61 @@ print(f"Tenkan-Kijun crosses detected: {len(crosses)}")
 ichimoku_boxes = []
 valid_crosses = []
 
-for cross in crosses:
+for i, cross in enumerate(crosses):
     cross_idx = cross['index']
     cross_type = cross['type']
     
-    # Check for cloud switch in the specified interval
+    # بررسی وجود کراس‌های جدید در بازه 22-30 کندلی
+    skip_cross = False
+    for future_cross in crosses[i+1:]:
+        if future_cross['index'] <= cross_idx + CLOUD_SWITCH_CHECK_END:
+            print(f"⚠️ کراس جدید در {future_cross['timestamp']} شناسایی شد - رد کردن کراس فعلی")
+            skip_cross = True
+            break
+    
+    if skip_cross:
+        continue
+
+    # محدوده بررسی تغییر فاز ابر
     start_check_idx = cross_idx + CLOUD_SWITCH_CHECK_START
     end_check_idx = cross_idx + CLOUD_SWITCH_CHECK_END
     
+    # تشخیص تغییر فاز ابر
     cloud_switch = detect_cloud_switch(df, start_check_idx, end_check_idx)
     
     if cloud_switch is None:
-        print(f"❌ No cloud switch detected for {cross_type} cross at {cross['timestamp']}")
+        print(f"❌ تغییر فاز ابر برای کراس {cross_type} در {cross['timestamp']} شناسایی نشد")
         continue
     
-    # Validate cloud switch matches cross type
-    if cross_type == 'bullish' and cloud_switch['type'] == 'bearish':
-        print(f"❌ Bullish cross with bearish cloud switch - invalid at {cross['timestamp']}")
+    # تطابق نوع کراس با تغییر فاز ابر
+    if cross_type == 'bullish' and cloud_switch['type'] != 'bullish':
+        print(f"❌ کراس صعودی با تغییر فاز نزولی ابر - نامعتبر در {cross['timestamp']}")
         continue
-    elif cross_type == 'bearish' and cloud_switch['type'] == 'bullish':
-        print(f"❌ Bearish cross with bullish cloud switch - invalid at {cross['timestamp']}")
+    elif cross_type == 'bearish' and cloud_switch['type'] != 'bearish':
+        print(f"❌ کراس نزولی با تغییر فاز صعودی ابر - نامعتبر در {cross['timestamp']}")
         continue
     
-    # Create box
+    # ایجاد باکس
     cross_candle = df.iloc[cross_idx]
-    cloud_switch_candle = df.iloc[cloud_switch['index']]
     
     if cross_type == 'bullish':
-        # Long setup
+        # تنظیمات باکس صعودی
         box = {
             "start": cross['timestamp'],
             "end": cloud_switch['timestamp'],
-            "top": cross_candle['high'],  # High of cross candle
-            "bottom": cross_candle['low'],  # Low of cross candle
+            "top": cross_candle['high'],   # high کندل کراس
+            "bottom": cross_candle['low'],  # low کندل کراس
             "type": "buy",
             "cross_idx": cross_idx,
             "cloud_switch_idx": cloud_switch['index']
         }
     else:
-        # Short setup
+        # تنظیمات باکس نزولی
         box = {
             "start": cross['timestamp'],
             "end": cloud_switch['timestamp'],
-            "top": cross_candle['high'],  # High of cross candle
-            "bottom": cross_candle['low'],  # Low of cross candle
+            "top": cross_candle['high'],   # high کندل کراس
+            "bottom": cross_candle['low'],  # low کندل کراس
             "type": "sell",
             "cross_idx": cross_idx,
             "cloud_switch_idx": cloud_switch['index']
@@ -231,10 +242,9 @@ for cross in crosses:
     
     ichimoku_boxes.append(box)
     valid_crosses.append(cross)
-    print(f"✅ Valid {cross_type} setup detected at {cross['timestamp']} with cloud switch at {cloud_switch['timestamp']}")
+    print(f"✅ سیگنال معتبر {cross_type} در {cross['timestamp']} با تغییر فاز ابر در {cloud_switch['timestamp']}")
 
-print(f"✅ Detected {len(ichimoku_boxes)} Ichimoku boxes")
-
+print(f"✅ تعداد باکس‌های شناسایی شده: {len(ichimoku_boxes)}")
 # === محاسبه معیارهای عملکرد ===
 print("⚙️ Computing performance metrics...")
 initial_balance = 100.0
