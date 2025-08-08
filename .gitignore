@@ -2,3 +2,4 @@ env
 data
 output
 trades_BONKUSDT.csv
+.env
