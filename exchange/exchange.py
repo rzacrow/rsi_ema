@@ -112,5 +112,5 @@ def close_long(volume: float):
 def close_short(volume: float):
     return place_futures_order(volume, "short", "close")
 
-res = open_long(volume=0.0001, leverage=20)
+res = open_long(volume=0.0001, leverage=80)
 print(res)

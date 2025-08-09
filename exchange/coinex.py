@@ -201,20 +201,19 @@ def set_futures_leverage(
 # -------------------------------------------------------------------
 if __name__ == "__main__":
     # 1) تنظیم لوریج ۲۰x (isolated) در BTCUSDT
-    print("تنظیم لوریج:", set_futures_leverage("BTCUSDT", leverage=20, margin_mode="isolated"))
+    #print("تنظیم لوریج:", set_futures_leverage("BTCUSDT", leverage=80, margin_mode="isolated"))
 
     # 2) باز کردن پوزیشن مارکت لانگ با حجم 0.01 BTC
-    print("باز کردن مارکت لانگ:", place_futures_order(
-        market="BTCUSDT",
-        side="buy",
-        order_type="market",
-        amount=0.01
-    ))
+    #print("باز کردن مارکت لانگ:", place_futures_order(
+    #    market="BTCUSDT",
+    #    side="buy",
+    #    order_type="market",
+    #    amount=0.0001
+    #))
 
     # 3) بستن نصف پوزیشن با سفارش لیمیت در قیمت 35000
     print("بستن پوزیشن:", close_futures_position(
         market="BTCUSDT",
-        close_type="limit",
-        amount=0.005,
-        price=35000
+        close_type="market",
+        amount=0.0001,
     ))
